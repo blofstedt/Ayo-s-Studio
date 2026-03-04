@@ -1,0 +1,7 @@
+{
+  "name": "Ayo\u0027s Studio",
+  "description": "An app that tracks your face and animates a 2D uploaded avatar image in real-time.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}
