@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { Sparkles, UserCircle2, MonitorUp, Image as ImageIcon, Save, Edit2, Check, ChevronDown, Film } from 'lucide-react';
 import { Category, NormalizedLandmark } from '@mediapipe/tasks-vision';
+import { Camera as CapacitorCamera } from '@capacitor/camera';
 import Avatar3DCanvas, { Avatar3DCanvasRef } from './components/Avatar3DCanvas';
 import WebcamFeed from './components/WebcamFeed';
 import VideoEditor from './components/VideoEditor';
@@ -61,6 +62,21 @@ export default function App() {
     };
     document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
+  // Request camera permissions on mount
+  useEffect(() => {
+    const requestPermissions = async () => {
+      try {
+        const permissions = await CapacitorCamera.checkPermissions();
+        if (permissions.camera !== 'granted') {
+          await CapacitorCamera.requestPermissions();
+        }
+      } catch (err) {
+        console.log('Camera permission request skipped (likely not in Capacitor context)', err);
+      }
+    };
+    requestPermissions();
   }, []);
 
   // Load from Google Sheets on mount
@@ -212,7 +228,7 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-[#0a0a0a] text-zinc-100 font-sans selection:bg-indigo-500/30">
-      <header className="border-b border-white/5 bg-black/50 backdrop-blur-xl sticky top-0 z-50">
+      <header className="border-b border-white/5 bg-black/50 backdrop-blur-xl sticky top-0 z-50 pt-[env(safe-area-inset-top)]">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-between gap-4">
           <div className="flex items-center gap-3 shrink-0">
             <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-indigo-500 to-violet-600 flex items-center justify-center shadow-lg shadow-indigo-500/20">
@@ -305,7 +321,7 @@ export default function App() {
         </div>
       </header>
 
-      <main className="max-w-7xl mx-auto p-4 sm:p-6 h-[calc(100vh-4rem)] relative">
+      <main className="max-w-7xl mx-auto p-4 sm:p-6 pb-[calc(1rem+env(safe-area-inset-bottom))] sm:pb-[calc(1.5rem+env(safe-area-inset-bottom))] h-[calc(100vh-4rem-env(safe-area-inset-top))] relative">
         <div className={`flex flex-col gap-4 sm:gap-6 h-full ${activeTab === 'avatar' ? 'block' : 'absolute opacity-0 pointer-events-none -left-[9999px]'}`}>
           {/* Top: Webcam */}
           <div className="flex-1 min-h-0 relative rounded-3xl overflow-hidden border border-white/5 bg-[#111] shadow-2xl flex flex-col">
