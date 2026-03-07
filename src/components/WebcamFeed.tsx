@@ -25,7 +25,6 @@ export default function WebcamFeed({ onVideoReady, landmarks }: WebcamFeedProps)
         if (videoRef.current) {
           videoRef.current.srcObject = stream;
           videoRef.current.onloadedmetadata = () => {
-            videoRef.current?.play();
             setIsCameraOn(true);
             setError(null);
             onVideoReady(videoRef.current!);
@@ -35,8 +34,10 @@ export default function WebcamFeed({ onVideoReady, landmarks }: WebcamFeedProps)
         console.error("Error accessing webcam:", err);
         if (err.name === 'NotAllowedError' || err.message.includes('Permission denied')) {
           setError("Camera access denied. Please allow camera permissions in your browser.");
+        } else if (err.name === 'NotFoundError') {
+          setError("No webcam found. Please connect a camera.");
         } else {
-          setError("Failed to access camera. Make sure it's connected and not in use.");
+          setError(`Failed to access camera: ${err.message || 'Unknown error'}`);
         }
       }
     }
@@ -82,6 +83,7 @@ export default function WebcamFeed({ onVideoReady, landmarks }: WebcamFeedProps)
         className="absolute inset-0 w-full h-full object-cover transform -scale-x-100"
         playsInline
         muted
+        autoPlay
       />
       <canvas
         ref={canvasRef}

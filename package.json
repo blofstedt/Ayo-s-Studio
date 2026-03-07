@@ -16,6 +16,7 @@
   "dependencies": {
     "@capacitor/camera": "^8.0.1",
     "@capacitor/core": "^8.1.0",
+    "@capgo/capacitor-screen-recorder": "^8.2.22",
     "@google/genai": "^1.29.0",
     "@mediapipe/tasks-vision": "^0.10.32",
     "@tailwindcss/vite": "^4.1.14",

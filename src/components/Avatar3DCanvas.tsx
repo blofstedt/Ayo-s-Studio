@@ -12,9 +12,6 @@ export interface Avatar3DCanvasRef {
 }
 
 interface Avatar3DCanvasProps {
-  blendshapes: Category[] | null;
-  matrix: Float32Array | null;
-  landmarks?: NormalizedLandmark[] | null;
   backgroundMode?: string;
   initialCameraPosition?: { x: number; y: number; z: number };
   isEditMode?: boolean;
@@ -101,7 +98,7 @@ const bgFragmentShader = `
 `;
 
 const Avatar3DCanvas = forwardRef<Avatar3DCanvasRef, Avatar3DCanvasProps>(
-  ({ blendshapes, matrix, landmarks, backgroundMode = 'transparent', initialCameraPosition, isEditMode = false, initialPartPositions }, ref) => {
+  ({ backgroundMode = 'transparent', initialCameraPosition, isEditMode = false, initialPartPositions }, ref) => {
     const wrapperRef = useRef<HTMLDivElement>(null);
     const containerRef = useRef<HTMLDivElement>(null);
     const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
@@ -112,16 +109,11 @@ const Avatar3DCanvas = forwardRef<Avatar3DCanvasRef, Avatar3DCanvasProps>(
     const hairGroupRef = useRef<THREE.Group | null>(null);
     const mouthGroupRef = useRef<THREE.Group | null>(null);
     const eyeRef = useRef<THREE.Mesh | null>(null);
-    const eyebrowGroupRef = useRef<THREE.Group | null>(null);
-    const eyebrowRef = useRef<THREE.Mesh | null>(null);
     const wavyMouthRef = useRef<THREE.Mesh | null>(null);
     const openMouthRef = useRef<THREE.Mesh | null>(null);
     const videoRef = useRef<HTMLVideoElement>(null);
     const bgPlaneRef = useRef<THREE.Mesh | null>(null);
 
-    const matrixRef = useRef(matrix);
-    const blendshapesRef = useRef(blendshapes);
-    const landmarksRef = useRef(landmarks);
     const isEditModeRef = useRef(isEditMode);
     const bgUniformsRef = useRef({
       u_time: { value: 0 },
@@ -129,9 +121,35 @@ const Avatar3DCanvas = forwardRef<Avatar3DCanvasRef, Avatar3DCanvasProps>(
     });
     const activeEmotionRef = useRef<{type: string, endTime: number} | null>(null);
 
-    useEffect(() => { matrixRef.current = matrix; }, [matrix]);
-    useEffect(() => { blendshapesRef.current = blendshapes; }, [blendshapes]);
-    useEffect(() => { landmarksRef.current = landmarks; }, [landmarks]);
+    const audioContextRef = useRef<AudioContext | null>(null);
+    const analyserRef = useRef<AnalyserNode | null>(null);
+    const dataArrayRef = useRef<Uint8Array | null>(null);
+
+    useEffect(() => {
+        const initAudio = async () => {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                const audioContext = new AudioContext();
+                const analyser = audioContext.createAnalyser();
+                const source = audioContext.createMediaStreamSource(stream);
+                source.connect(analyser);
+                analyser.fftSize = 256;
+                const dataArray = new Uint8Array(analyser.frequencyBinCount);
+                
+                audioContextRef.current = audioContext;
+                analyserRef.current = analyser;
+                dataArrayRef.current = dataArray;
+            } catch (err) {
+                console.error("Microphone access denied:", err);
+            }
+        };
+        initAudio();
+        
+        return () => {
+            if (audioContextRef.current) audioContextRef.current.close();
+        };
+    }, []);
+
     useEffect(() => { isEditModeRef.current = isEditMode; }, [isEditMode]);
 
     useImperativeHandle(ref, () => ({
@@ -160,7 +178,6 @@ const Avatar3DCanvas = forwardRef<Avatar3DCanvasRef, Avatar3DCanvasProps>(
       getPartPositions: () => {
         return {
           eye: { x: eyeRef.current?.position.x || 0, y: eyeRef.current?.position.y || 0 },
-          eyebrow: { x: eyebrowGroupRef.current?.position.x || 0, y: eyebrowGroupRef.current?.position.y || 0 },
           mouth: { x: mouthGroupRef.current?.position.x || 0, y: mouthGroupRef.current?.position.y || 0 },
           hair: { x: hairGroupRef.current?.position.x || 0, y: hairGroupRef.current?.position.y || 0 }
         };
@@ -222,7 +239,9 @@ const Avatar3DCanvas = forwardRef<Avatar3DCanvasRef, Avatar3DCanvasProps>(
       });
       const bgPlane = new THREE.Mesh(bgGeo, bgMat);
       bgPlane.position.z = -50;
-      bgPlane.visible = false;
+      bgPlane.visible = backgroundMode !== 'transparent' && backgroundMode !== 'green';
+      if (backgroundMode === 'space') bgUniformsRef.current.u_mode.value = 2;
+      if (backgroundMode === 'green') scene.background = new THREE.Color(0x00ff00);
       scene.add(bgPlane);
       bgPlaneRef.current = bgPlane;
 
@@ -313,35 +332,12 @@ const Avatar3DCanvas = forwardRef<Avatar3DCanvasRef, Avatar3DCanvasProps>(
       headGroup.add(eye);
       eyeRef.current = eye;
 
-      // Eyebrow
-      const eyebrowGroup = new THREE.Group();
-      if (initialPartPositions?.eyebrow) {
-        eyebrowGroup.position.set(initialPartPositions.eyebrow.x, initialPartPositions.eyebrow.y, 0.06);
-      } else {
-        eyebrowGroup.position.set(-0.6, 1.1, 0.06);
-      }
-      headGroup.add(eyebrowGroup);
-      eyebrowGroupRef.current = eyebrowGroup;
-
-      const browShape = new THREE.Shape();
-      browShape.moveTo(-0.4, 0);
-      browShape.quadraticCurveTo(0, 0.2, 0.4, 0);
-      browShape.quadraticCurveTo(0.45, -0.05, 0.4, -0.1);
-      browShape.quadraticCurveTo(0, 0.1, -0.4, -0.1);
-      browShape.quadraticCurveTo(-0.45, -0.05, -0.4, 0);
-
-      const eyebrowGeo = new THREE.ShapeGeometry(browShape);
-      const eyebrowMat = new THREE.MeshBasicMaterial({ color: 0x111111 });
-      const eyebrow = new THREE.Mesh(eyebrowGeo, eyebrowMat);
-      eyebrowGroup.add(eyebrow);
-      eyebrowRef.current = eyebrow;
-
       // Mouth
       const mouthGroup = new THREE.Group();
       if (initialPartPositions?.mouth) {
         mouthGroup.position.set(initialPartPositions.mouth.x, initialPartPositions.mouth.y, 0.05);
       } else {
-        mouthGroup.position.set(0, -0.5, 0.05);
+        mouthGroup.position.set(0, -0.9, 0.05);
       }
       headGroup.add(mouthGroup);
       mouthGroupRef.current = mouthGroup;
@@ -372,25 +368,6 @@ const Avatar3DCanvas = forwardRef<Avatar3DCanvasRef, Avatar3DCanvasProps>(
       const draggableObjects: THREE.Object3D[] = [];
       const dragMap = new Map<THREE.Object3D, THREE.Object3D>();
       
-      const hairHit = new THREE.Mesh(new THREE.CircleGeometry(1.8, 16), new THREE.MeshBasicMaterial({ visible: false }));
-      hairHit.position.y = 0.8;
-      hairGroup.add(hairHit);
-      draggableObjects.push(hairHit);
-      dragMap.set(hairHit, hairGroup);
-
-      draggableObjects.push(eye);
-      dragMap.set(eye, eye);
-
-      const eyebrowHit = new THREE.Mesh(new THREE.PlaneGeometry(1.2, 0.6), new THREE.MeshBasicMaterial({ visible: false }));
-      eyebrowGroup.add(eyebrowHit);
-      draggableObjects.push(eyebrowHit);
-      dragMap.set(eyebrowHit, eyebrowGroup);
-
-      const mouthHit = new THREE.Mesh(new THREE.PlaneGeometry(1.5, 1), new THREE.MeshBasicMaterial({ visible: false }));
-      mouthGroup.add(mouthHit);
-      draggableObjects.push(mouthHit);
-      dragMap.set(mouthHit, mouthGroup);
-
       const raycaster = new THREE.Raycaster();
       const mouse = new THREE.Vector2();
       let draggedObject: THREE.Object3D | null = null;
@@ -400,7 +377,6 @@ const Avatar3DCanvas = forwardRef<Avatar3DCanvasRef, Avatar3DCanvasProps>(
       if (videoRef.current) {
         const stream = renderer.domElement.captureStream(30);
         videoRef.current.srcObject = stream;
-        videoRef.current.play().catch(e => console.error("Video play error:", e));
       }
 
       const handleResize = () => {
@@ -419,237 +395,49 @@ const Avatar3DCanvas = forwardRef<Avatar3DCanvasRef, Avatar3DCanvasProps>(
       let timeoutId: number;
       const clock = new THREE.Clock();
 
-      // Handle Zoom (Pinch and Scroll) and Pan (Drag)
-      let initialPinchDistance = -1;
-      let initialCameraZ = camera.position.z;
-      let isDragging = false;
-      let previousPos = { x: 0, y: 0 };
-
-      const getPos = (e: TouchEvent | MouseEvent) => {
-        if ('touches' in e && e.touches.length > 0) {
-          return { x: e.touches[0].clientX, y: e.touches[0].clientY };
-        }
-        return { x: (e as MouseEvent).clientX, y: (e as MouseEvent).clientY };
-      };
-
-      const handleDown = (e: TouchEvent | MouseEvent) => {
-        if (isEditModeRef.current) {
-          const rect = renderer.domElement.getBoundingClientRect();
-          const pos = getPos(e);
-          mouse.x = ((pos.x - rect.left) / rect.width) * 2 - 1;
-          mouse.y = -((pos.y - rect.top) / rect.height) * 2 + 1;
-          
-          raycaster.setFromCamera(mouse, camera);
-          const intersects = raycaster.intersectObjects(draggableObjects, false);
-          if (intersects.length > 0) {
-            const hit = intersects[0].object;
-            draggedObject = dragMap.get(hit) || null;
-            if (draggedObject) {
-              isDragging = true;
-              const intersectPoint = intersects[0].point;
-              if (draggedObject.parent) {
-                draggedObject.parent.worldToLocal(intersectPoint);
-                dragOffset.copy(draggedObject.position).sub(intersectPoint);
-              }
-              return;
-            }
-          }
-        }
-
-        if ('touches' in e && e.touches.length === 2) {
-          const dx = e.touches[0].clientX - e.touches[1].clientX;
-          const dy = e.touches[0].clientY - e.touches[1].clientY;
-          initialPinchDistance = Math.sqrt(dx * dx + dy * dy);
-          initialCameraZ = camera.position.z;
-          isDragging = false;
-        } else if (!('touches' in e) || e.touches.length === 1) {
-          isDragging = true;
-          previousPos = getPos(e);
-        }
-      };
-
-      const handleMove = (e: TouchEvent | MouseEvent) => {
-        if (isEditModeRef.current && draggedObject && isDragging) {
-          e.preventDefault();
-          const rect = renderer.domElement.getBoundingClientRect();
-          const pos = getPos(e);
-          mouse.x = ((pos.x - rect.left) / rect.width) * 2 - 1;
-          mouse.y = -((pos.y - rect.top) / rect.height) * 2 + 1;
-          
-          raycaster.setFromCamera(mouse, camera);
-          const targetZ = new THREE.Vector3().setFromMatrixPosition(draggedObject.matrixWorld).z;
-          const plane = new THREE.Plane(new THREE.Vector3(0, 0, 1), -targetZ);
-          const intersectPoint = new THREE.Vector3();
-          raycaster.ray.intersectPlane(plane, intersectPoint);
-          
-          if (intersectPoint && draggedObject.parent) {
-            draggedObject.parent.worldToLocal(intersectPoint);
-            draggedObject.position.x = intersectPoint.x + dragOffset.x;
-            draggedObject.position.y = intersectPoint.y + dragOffset.y;
-          }
-          return;
-        }
-
-        if ('touches' in e && e.touches.length === 2 && initialPinchDistance > 0) {
-          e.preventDefault(); // Prevent scrolling while zooming
-          const dx = e.touches[0].clientX - e.touches[1].clientX;
-          const dy = e.touches[0].clientY - e.touches[1].clientY;
-          const distance = Math.sqrt(dx * dx + dy * dy);
-          
-          const scale = initialPinchDistance / distance;
-          let newZ = initialCameraZ * scale;
-          newZ = Math.max(3, Math.min(newZ, 60)); // Clamp zoom
-          camera.position.z = newZ;
-        } else if (isDragging) {
-          e.preventDefault();
-          const pos = getPos(e);
-          const dx = pos.x - previousPos.x;
-          const dy = pos.y - previousPos.y;
-          previousPos = pos;
-
-          const panSpeed = camera.position.z * 0.0015;
-          camera.position.x -= dx * panSpeed;
-          camera.position.y += dy * panSpeed;
-        }
-      };
-
-      const handleUp = (e: TouchEvent | MouseEvent) => {
-        if (draggedObject) {
-          draggedObject = null;
-          isDragging = false;
-          return;
-        }
-
-        if ('touches' in e && e.touches.length < 2) {
-          initialPinchDistance = -1;
-        }
-        if (!('touches' in e) || e.touches.length === 0) {
-          isDragging = false;
-        }
-      };
-
-      const handleWheel = (e: WheelEvent) => {
-        e.preventDefault();
-        let newZ = camera.position.z + e.deltaY * 0.01;
-        newZ = Math.max(3, Math.min(newZ, 60));
-        camera.position.z = newZ;
-      };
-
-      const handleTouchStart = (e: TouchEvent) => handleDown(e);
-      const handleTouchMove = (e: TouchEvent) => handleMove(e);
-      const handleTouchEnd = (e: TouchEvent) => handleUp(e);
-      
-      const handleMouseDown = (e: MouseEvent) => handleDown(e);
-      const handleMouseMove = (e: MouseEvent) => handleMove(e);
-      const handleMouseUp = (e: MouseEvent) => handleUp(e);
-
-      wrapper.addEventListener('touchstart', handleTouchStart, { passive: false });
-      wrapper.addEventListener('touchmove', handleTouchMove, { passive: false });
-      wrapper.addEventListener('touchend', handleTouchEnd);
-      wrapper.addEventListener('mousedown', handleMouseDown);
-      window.addEventListener('mousemove', handleMouseMove, { passive: false });
-      window.addEventListener('mouseup', handleMouseUp);
-      wrapper.addEventListener('wheel', handleWheel, { passive: false });
-
       const animate = () => {
         timeoutId = window.setTimeout(animate, 33);
         const t = clock.getElapsedTime();
         bgUniformsRef.current.u_time.value = t;
 
-        // Apply limited head rotation
-        if (matrixRef.current && headGroupRef.current) {
-          const mat = new THREE.Matrix4().fromArray(matrixRef.current);
-          const position = new THREE.Vector3();
-          const quaternion = new THREE.Quaternion();
-          const scale = new THREE.Vector3();
-          mat.decompose(position, quaternion, scale);
-
-          const euler = new THREE.Euler().setFromQuaternion(quaternion, 'YXZ');
-          
-          // Limit rotation to a reasonable threshold (e.g., +/- 15 degrees = ~0.26 radians)
-          const limit = 0.26;
-          
-          // MediaPipe matrix axes: Y and Z are usually inverted compared to Three.js
-          // Only apply Z-axis rotation (roll) to keep the avatar 2D
-          const targetZ = Math.max(-limit, Math.min(limit, -euler.z));
-          
-          // Smoothly interpolate to the target rotation
-          headGroupRef.current.rotation.z += (targetZ - headGroupRef.current.rotation.z) * 0.3;
+        // Random blinking
+        if (eyeRef.current) {
+            const now = Date.now();
+            if (!eyeRef.current.userData.nextBlink) eyeRef.current.userData.nextBlink = now + 3000;
+            
+            if (now > eyeRef.current.userData.nextBlink) {
+                eyeRef.current.scale.y = 0.1; // Blink
+                if (!eyeRef.current.userData.blinkEndTime) eyeRef.current.userData.blinkEndTime = now + 200;
+            }
+            
+            if (eyeRef.current.userData.blinkEndTime && now > eyeRef.current.userData.blinkEndTime) {
+                eyeRef.current.scale.y = 1.5; // Open
+                eyeRef.current.userData.nextBlink = now + 3000 + Math.random() * 2000; // 3-5 seconds
+                eyeRef.current.userData.blinkEndTime = null;
+            }
         }
 
-        // Apply Blendshapes and Landmarks
-        if (blendshapesRef.current) {
-          let mouthOpenAmount = 0;
-          if (landmarksRef.current && landmarksRef.current.length > 14) {
-            // Use inner lip landmarks (13 and 14) to calculate actual mouth opening distance
-            const upperLip = landmarksRef.current[13];
-            const lowerLip = landmarksRef.current[14];
-            // Calculate distance and normalize it
-            const distance = Math.abs(lowerLip.y - upperLip.y);
-            // Threshold to ignore tiny movements, scale up the rest
-            mouthOpenAmount = Math.max(0, (distance - 0.01) * 10);
-          } else {
-            // Fallback to blendshape if landmarks aren't available
-            mouthOpenAmount = blendshapesRef.current.find(b => b.categoryName === 'jawOpen')?.score || 0;
-          }
-
-          let smileLeft = blendshapesRef.current.find(b => b.categoryName === 'mouthSmileLeft')?.score || 0;
-          let smileRight = blendshapesRef.current.find(b => b.categoryName === 'mouthSmileRight')?.score || 0;
-          let smile = (smileLeft + smileRight) / 2;
-          let blinkLeft = blendshapesRef.current.find(b => b.categoryName === 'eyeBlinkLeft')?.score || 0;
-          let blinkRight = blendshapesRef.current.find(b => b.categoryName === 'eyeBlinkRight')?.score || 0;
-          let blink = Math.max(blinkLeft, blinkRight);
-
-          let browInnerUp = blendshapesRef.current.find(b => b.categoryName === 'browInnerUp')?.score || 0;
-          let browDownLeft = blendshapesRef.current.find(b => b.categoryName === 'browDownLeft')?.score || 0;
-          let browDownRight = blendshapesRef.current.find(b => b.categoryName === 'browDownRight')?.score || 0;
-          let browDown = Math.max(browDownLeft, browDownRight);
-
-          if (activeEmotionRef.current) {
-            const { type, endTime } = activeEmotionRef.current;
-            const now = Date.now();
-            if (now < endTime) {
-              const progress = (endTime - now) / 2000;
-              const intensity = Math.sin(progress * Math.PI); // 0 -> 1 -> 0
-              
-              if (type === 'happy') {
-                smile = Math.max(smile, intensity);
-              } else if (type === 'sad') {
-                browInnerUp = Math.max(browInnerUp, intensity);
-                smile = 0;
-              } else if (type === 'angry') {
-                browDown = Math.max(browDown, intensity);
-              } else if (type === 'surprised') {
-                browInnerUp = Math.max(browInnerUp, intensity);
-                mouthOpenAmount = Math.max(mouthOpenAmount, intensity * 0.8);
-              }
-            } else {
-              activeEmotionRef.current = null;
+        // Mouth movement from mic
+        let mouthOpenAmount = 0;
+        if (analyserRef.current && dataArrayRef.current) {
+            analyserRef.current.getByteFrequencyData(dataArrayRef.current);
+            let sum = 0;
+            for (let i = 0; i < dataArrayRef.current.length; i++) {
+                sum += dataArrayRef.current[i];
             }
-          }
+            const average = sum / dataArrayRef.current.length;
+            mouthOpenAmount = Math.min(1, average / 50); // Normalize
+        }
 
-          if (eyeRef.current) {
-            eyeRef.current.scale.y = blink > 0.4 ? 0.1 : 1.5;
-          }
-
-          if (eyebrowRef.current) {
-            const browOffset = (browInnerUp * 0.4) - (browDown * 0.3);
-            eyebrowRef.current.position.y = browOffset;
-            // Very slight rotation just for expression, but not slanted/angry by default
-            eyebrowRef.current.rotation.z = (browInnerUp * 0.1);
-          }
-
-          if (wavyMouthRef.current && openMouthRef.current) {
+        if (wavyMouthRef.current && openMouthRef.current) {
             if (mouthOpenAmount > 0.05) {
-              wavyMouthRef.current.visible = false;
-              openMouthRef.current.visible = true;
-              openMouthRef.current.scale.set(1 + smile * 0.5, mouthOpenAmount * 1.5, 1);
+                wavyMouthRef.current.visible = false;
+                openMouthRef.current.visible = true;
+                openMouthRef.current.scale.set(1, mouthOpenAmount * 0.8, 1);
             } else {
-              wavyMouthRef.current.visible = true;
-              openMouthRef.current.visible = false;
-              wavyMouthRef.current.scale.set(1 + smile * 0.5, 1 + smile * 0.5, 1);
+                wavyMouthRef.current.visible = true;
+                openMouthRef.current.visible = false;
             }
-          }
         }
 
         renderer.render(scene, camera);
@@ -658,13 +446,6 @@ const Avatar3DCanvas = forwardRef<Avatar3DCanvasRef, Avatar3DCanvasProps>(
 
       return () => {
         window.removeEventListener('resize', handleResize);
-        wrapper.removeEventListener('touchstart', handleTouchStart);
-        wrapper.removeEventListener('touchmove', handleTouchMove);
-        wrapper.removeEventListener('touchend', handleTouchEnd);
-        wrapper.removeEventListener('mousedown', handleMouseDown);
-        window.removeEventListener('mousemove', handleMouseMove);
-        window.removeEventListener('mouseup', handleMouseUp);
-        wrapper.removeEventListener('wheel', handleWheel);
         clearTimeout(timeoutId);
         renderer.dispose();
         container.innerHTML = '';
@@ -703,6 +484,7 @@ const Avatar3DCanvas = forwardRef<Avatar3DCanvasRef, Avatar3DCanvasProps>(
           ref={videoRef} 
           muted 
           playsInline 
+          autoPlay
           style={{ position: 'absolute', top: 0, left: 0, width: '1px', height: '1px', opacity: 0, pointerEvents: 'none', zIndex: -1 }} 
         />
       </div>
