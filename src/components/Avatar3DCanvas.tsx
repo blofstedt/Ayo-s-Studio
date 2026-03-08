@@ -218,7 +218,7 @@ const Avatar3DCanvas = forwardRef<Avatar3DCanvasRef, Avatar3DCanvasProps>(
       if (initialCameraPosition) {
         camera.position.set(initialCameraPosition.x, initialCameraPosition.y, initialCameraPosition.z);
       } else {
-        camera.position.set(0, 0, 8);
+        camera.position.set(0, 1.0, 6);
       }
       cameraRef.current = camera;
 
