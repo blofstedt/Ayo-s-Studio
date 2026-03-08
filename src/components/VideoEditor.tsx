@@ -426,10 +426,10 @@ const VfxOverlay: React.FC<{ vfx: any, onUpdate: (updater: (prev: any) => any) =
 };
 export default function VideoEditor({ avatarRef, avatarComponent }: VideoEditorProps) {
   const [isRecording, setIsRecording] = useState(false);
-  const [activeClipIndex, setActiveClipIndex] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [selectedClipId, setSelectedClipId] = useState<string | null>(null);
   const [clips, setClips] = useState<{id: string, url: string, duration: number, laneIndex: number, startTime: number, type: 'video' | 'audio', mediaOffset?: number}[]>([]);
   const [texts, setTexts] = useState<{id: string, text: string, x: number, y: number, startTime: number, duration: number, rotation: number, scale: number, laneIndex: number}[]>([]);
   const [vfxElements, setVfxElements] = useState<{id: string, url: string, x: number, y: number, startTime: number, duration: number, rotation: number, scale: number, laneIndex: number}[]>([]);
@@ -514,9 +514,13 @@ export default function VideoEditor({ avatarRef, avatarComponent }: VideoEditorP
     return zoom < 1 ? baseDuration / zoom : baseDuration;
   }, [clips, texts, vfxElements, draggedClip, zoom]);
 
-  const playingVideoClipIndex = React.useMemo(() => {
-    return clips.findIndex(c => c.type === 'video' && currentTime >= c.startTime && currentTime < c.startTime + c.duration);
+  const activeVideoClips = React.useMemo(() => {
+    return clips
+      .filter(c => c.type === 'video' && currentTime >= c.startTime && currentTime < c.startTime + c.duration)
+      .sort((a, b) => (a.laneIndex ?? 1) - (b.laneIndex ?? 1) || a.startTime - b.startTime);
   }, [currentTime, clips]);
+  const primaryVideoClip = activeVideoClips[0] || null;
+  const secondaryVideoClip = activeVideoClips[1] || null;
   
   const playingAudioClipIndex = React.useMemo(() => {
     return clips.findIndex(c => c.type === 'audio' && currentTime >= c.startTime && currentTime < c.startTime + c.duration);
@@ -762,10 +766,11 @@ export default function VideoEditor({ avatarRef, avatarComponent }: VideoEditorP
   useEffect(() => {
     const time = currentTime;
     
-    if (playingVideoClipIndex !== -1) {
-      const media = playbackVideoRef.current;
-      if (media) {
-        const clip = clips[playingVideoClipIndex];
+    if (activeVideoClips.length > 0) {
+      for (const clip of activeVideoClips.slice(0, 2)) {
+        const media = playbackVideoRefs.current[clip.id];
+        if (!media) continue;
+
         const timeInClip = time - clip.startTime + (clip.mediaOffset || 0);
         try {
           if (Math.abs(media.currentTime - timeInClip) > 0.25) {
@@ -802,10 +807,11 @@ export default function VideoEditor({ avatarRef, avatarComponent }: VideoEditorP
         }
       }
     }
-  }, [playingVideoClipIndex, playingAudioClipIndex, currentTime, clips, isPlaying]);
+  }, [activeVideoClips, playingAudioClipIndex, currentTime, clips, isPlaying]);
 
   const previewCanvasRef = useRef<HTMLCanvasElement>(null);
   const playbackVideoRef = useRef<HTMLVideoElement>(null);
+  const playbackVideoRefs = useRef<Record<string, HTMLVideoElement | null>>({});
   const playbackAudioRef = useRef<HTMLAudioElement>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const isRecordingRef = useRef(false);
@@ -1212,9 +1218,10 @@ export default function VideoEditor({ avatarRef, avatarComponent }: VideoEditorP
   const splitClip = () => {
     if (clips.length === 0) return;
     const time = currentTime;
+    if (!selectedClipId) return;
     
-    // Find the clip under the playhead
-    const clipIndex = clips.findIndex(c => c.type === 'video' && time > c.startTime && time < c.startTime + c.duration);
+    // Find selected clip under the playhead
+    const clipIndex = clips.findIndex(c => c.id === selectedClipId && c.type === 'video' && time > c.startTime && time < c.startTime + c.duration);
     if (clipIndex === -1) return;
     
     const clipToSplit = clips[clipIndex];
@@ -1224,9 +1231,10 @@ export default function VideoEditor({ avatarRef, avatarComponent }: VideoEditorP
     if (splitPoint < 0.5 || clipToSplit.duration - splitPoint < 0.5) return;
     
     const newClip1 = { ...clipToSplit, duration: splitPoint };
+    const newClip2Id = Math.random().toString(36).substring(7);
     const newClip2 = { 
       ...clipToSplit, 
-      id: Math.random().toString(36).substring(7), 
+      id: newClip2Id, 
       startTime: time, 
       duration: clipToSplit.duration - splitPoint,
       mediaOffset: (clipToSplit.mediaOffset || 0) + splitPoint
@@ -1245,6 +1253,7 @@ export default function VideoEditor({ avatarRef, avatarComponent }: VideoEditorP
       }
       return newClips;
     });
+    setSelectedClipId(newClip2Id);
   };
 
   const videoHasExtra = clips.some(c => c.type === 'video' && (c.laneIndex ?? 1) !== 1);
@@ -1255,7 +1264,11 @@ export default function VideoEditor({ avatarRef, avatarComponent }: VideoEditorP
     return clips.filter(c => c.type === 'video').map(clip => (
       <div 
         key={clip.id}
-        className={`absolute bg-blue-500/50 border border-blue-400 rounded-sm cursor-move overflow-hidden transition-all duration-75 select-none ${draggedClip?.id === clip.id ? 'opacity-70 scale-105 shadow-2xl z-50 ring-2 ring-white' : ''}`}
+        className={`absolute bg-blue-500/50 border border-blue-400 rounded-sm cursor-move overflow-hidden transition-all duration-75 select-none ${selectedClipId === clip.id ? 'ring-2 ring-yellow-300' : ''} ${draggedClip?.id === clip.id ? 'opacity-70 scale-105 shadow-2xl z-50 ring-2 ring-white' : ''}`}
+        onClick={(e) => {
+          e.stopPropagation();
+          setSelectedClipId(clip.id);
+        }}
         style={{ left: `${totalDuration > 0 ? (clip.startTime / totalDuration) * 100 : 0}%`, width: `${totalDuration > 0 ? (clip.duration / totalDuration) * 100 : 0}%`, top: videoHasExtra ? `${(clip.laneIndex ?? 1) * 33.33}%` : '0%', height: videoHasExtra ? '33.33%' : '100%', touchAction: 'none' }}
         onPointerDown={(e) => startDragging(e, clip, 'move')}
       >
@@ -1272,7 +1285,7 @@ export default function VideoEditor({ avatarRef, avatarComponent }: VideoEditorP
         </div>
       </div>
     ));
-  }, [clips, draggedClip, totalDuration, videoHasExtra, startDragging]);
+  }, [clips, draggedClip, totalDuration, videoHasExtra, startDragging, selectedClipId]);
 
   const audioClipsRender = React.useMemo(() => {
     return clips.filter(c => c.type === 'audio').map(clip => (
@@ -1363,20 +1376,49 @@ export default function VideoEditor({ avatarRef, avatarComponent }: VideoEditorP
             </div>
           )}
         {/* Playback Video (shown when not recording and clips exist) */}
-        {!isRecording && playingVideoClipIndex !== -1 && (
-          <video 
-            ref={playbackVideoRef}
-            src={clips[playingVideoClipIndex].url} 
-            className="max-w-full max-h-full object-contain"
-            onEnded={() => {}}
-            onPlay={() => {}}
-            onPause={() => {}}
-            onTimeUpdate={(e) => {
-              // Time updates are now driven by requestAnimationFrame loop
-            }}
-          />
-        )}
-        
+        {!isRecording && primaryVideoClip && (() => {
+          const transitionFrom = primaryVideoClip.startTime <= (secondaryVideoClip?.startTime ?? Number.MAX_VALUE)
+            ? primaryVideoClip
+            : secondaryVideoClip!;
+          const transitionTo = transitionFrom.id === primaryVideoClip.id ? secondaryVideoClip : primaryVideoClip;
+          const overlapStart = transitionTo ? Math.max(transitionFrom.startTime, transitionTo.startTime) : 0;
+          const overlapEnd = transitionTo ? Math.min(transitionFrom.startTime + transitionFrom.duration, transitionTo.startTime + transitionTo.duration) : 0;
+          const overlapDuration = Math.max(0, overlapEnd - overlapStart);
+          const progress = overlapDuration > 0 ? Math.max(0, Math.min(1, (currentTime - overlapStart) / overlapDuration)) : 0;
+          const primaryOpacity = transitionTo ? (primaryVideoClip.id === transitionFrom.id ? 1 - progress : progress) : 1;
+          const secondaryOpacity = transitionTo ? (secondaryVideoClip?.id === transitionFrom.id ? 1 - progress : progress) : 0;
+
+          return (
+            <>
+              <video
+                ref={(el) => {
+                  playbackVideoRef.current = el;
+                  playbackVideoRefs.current[primaryVideoClip.id] = el;
+                }}
+                src={primaryVideoClip.url}
+                className="absolute inset-0 w-full h-full object-contain"
+                style={{ opacity: primaryOpacity }}
+                onEnded={() => {}}
+                onPlay={() => {}}
+                onPause={() => {}}
+              />
+              {secondaryVideoClip && (
+                <video
+                  ref={(el) => {
+                    playbackVideoRefs.current[secondaryVideoClip.id] = el;
+                  }}
+                  src={secondaryVideoClip.url}
+                  className="absolute inset-0 w-full h-full object-contain"
+                  style={{ opacity: secondaryOpacity }}
+                  onEnded={() => {}}
+                  onPlay={() => {}}
+                  onPause={() => {}}
+                />
+              )}
+            </>
+          );
+        })()}
+
         {/* Text Overlays */}
         {!isRecording && texts.filter(t => currentTime >= t.startTime && currentTime <= t.startTime + t.duration).map(text => (
           <TextOverlay 
@@ -1421,7 +1463,7 @@ export default function VideoEditor({ avatarRef, avatarComponent }: VideoEditorP
             }}
           />
         )}
-        {!isRecording && playingVideoClipIndex === -1 && (
+        {!isRecording && !primaryVideoClip && (
           <div className="absolute inset-0 bg-black" />
         )}
 
@@ -1516,16 +1558,6 @@ export default function VideoEditor({ avatarRef, avatarComponent }: VideoEditorP
             const newTime = trackWidth > 0 ? (x / trackWidth) * totalDuration : 0;
             setCurrentTimeSafe(newTime);
             
-            // Find which clip this progress corresponds to
-            let acc = 0;
-            for (let i = 0; i < clips.length; i++) {
-              if (newTime >= acc && newTime < acc + clips[i].duration) {
-                setActiveClipIndex(i);
-                break;
-              }
-              acc += clips[i].duration;
-            }
-            
             // Start dragging
             isDraggingPlayheadRef.current = true;
             setIsDraggingPlayhead(true);
@@ -1540,16 +1572,6 @@ export default function VideoEditor({ avatarRef, avatarComponent }: VideoEditorP
             const newTime = trackWidth > 0 ? (x / trackWidth) * totalDuration : 0;
             setCurrentTimeSafe(newTime);
             
-            // Find which clip this progress corresponds to
-            let acc = 0;
-            for (let i = 0; i < clips.length; i++) {
-              if (newTime >= acc && newTime < acc + clips[i].duration) {
-                setActiveClipIndex(i);
-                break;
-              }
-              acc += clips[i].duration;
-            }
-
             // Auto-scroll timeline container when dragging near edges
             if (timelineContainerRef.current) {
               const container = timelineContainerRef.current;
@@ -1571,6 +1593,17 @@ export default function VideoEditor({ avatarRef, avatarComponent }: VideoEditorP
         >
           {/* Ruler */}
           <div className="h-6 border-b border-white/10 relative flex items-end text-[10px] text-zinc-500 select-none ml-14">
+            <button
+              onPointerDown={(e) => e.stopPropagation()}
+              onClick={(e) => {
+                e.stopPropagation();
+                splitClip();
+              }}
+              className="absolute -left-12 bottom-0 w-8 h-5 rounded bg-white/10 hover:bg-white/20 flex items-center justify-center text-zinc-300 hover:text-white transition-colors"
+              title="Cut selected clip at cursor"
+            >
+              <Scissors className="w-3.5 h-3.5" />
+            </button>
             {Array.from({ length: 11 }).map((_, i) => {
               const time = (totalDuration * (i / 10)).toFixed(1);
               return (
