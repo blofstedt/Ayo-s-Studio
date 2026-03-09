@@ -2,6 +2,7 @@ import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { motion } from 'motion/react';
 import { Square, Circle, Monitor, Scissors, Video, Music, Type, Layers, Zap, Play, Pause, SkipBack, SkipForward, AlertCircle, Upload, Plus, MoreVertical, Volume2, Star, Trash, ChevronLeft, ChevronRight } from 'lucide-react';
 import { Capacitor } from '@capacitor/core';
+import { Camera } from '@capacitor/camera';
 import { ScreenRecorder } from '@capgo/capacitor-screen-recorder';
 import { Avatar3DCanvasRef } from './Avatar3DCanvas';
 
@@ -496,9 +497,32 @@ export default function VideoEditor({ avatarRef, avatarComponent }: VideoEditorP
   const lastClickClipIdRef = useRef<string | null>(null);
   const [activeGainClipId, setActiveGainClipId] = useState<string | null>(null);
 
+  const requestStartupPermissions = useCallback(async () => {
+    if (!Capacitor.isNativePlatform()) return;
+
+    try {
+      await Camera.requestPermissions({ permissions: ['camera', 'photos'] });
+    } catch (err) {
+      console.warn('Unable to request camera/photos permissions at startup.', err);
+    }
+
+    if (!navigator.mediaDevices?.getUserMedia) return;
+
+    try {
+      const micStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+      micStream.getTracks().forEach(track => track.stop());
+    } catch (err) {
+      console.warn('Unable to request microphone permission at startup.', err);
+    }
+  }, []);
+
   useEffect(() => {
     draggedClipRef.current = draggedClip;
   }, [draggedClip]);
+
+  useEffect(() => {
+    requestStartupPermissions();
+  }, [requestStartupPermissions]);
 
   const totalDuration = React.useMemo(() => {
     if (draggedClip) {
