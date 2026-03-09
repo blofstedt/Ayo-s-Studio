@@ -814,9 +814,14 @@ export default function VideoEditor({ avatarRef, avatarComponent }: VideoEditorP
   const playbackVideoRefs = useRef<Record<string, HTMLVideoElement | null>>({});
   const playbackAudioRef = useRef<HTMLAudioElement>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const micRecorderRef = useRef<MediaRecorder | null>(null);
   const isRecordingRef = useRef(false);
   const audioCtxRef = useRef<AudioContext | null>(null);
   const destNodeRef = useRef<MediaStreamAudioDestinationNode | null>(null);
+  const screenStreamRef = useRef<MediaStream | null>(null);
+  const micStreamRef = useRef<MediaStream | null>(null);
+  const screenAudioSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
+  const micAudioSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
 
   useEffect(() => {
     const handleImport = () => {
@@ -946,6 +951,19 @@ export default function VideoEditor({ avatarRef, avatarComponent }: VideoEditorP
     playEmotionSound(emotion);
   };
 
+  const getMediaDuration = (url: string, type: 'video' | 'audio') => {
+    return new Promise<number>((resolve) => {
+      const media = document.createElement(type);
+      media.preload = 'metadata';
+      media.src = url;
+      media.onloadedmetadata = () => {
+        const duration = Number.isFinite(media.duration) ? media.duration : 5;
+        resolve(duration > 0 ? duration : 5);
+      };
+      media.onerror = () => resolve(5);
+    });
+  };
+
   const startRecording = async () => {
     setErrorMsg(null);
     try {
@@ -956,8 +974,14 @@ export default function VideoEditor({ avatarRef, avatarComponent }: VideoEditorP
         return;
       }
 
-      // Try to get screen recording
       const screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
+      const micStream = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+        video: false,
+      });
+
+      screenStreamRef.current = screenStream;
+      micStreamRef.current = micStream;
 
       const screenVideo = document.createElement('video');
       screenVideo.srcObject = screenStream;
@@ -971,17 +995,16 @@ export default function VideoEditor({ avatarRef, avatarComponent }: VideoEditorP
 
       const draw = () => {
         if (!isRecordingRef.current) return;
-        
-        // Match canvas size to screen video aspect ratio, but limit to 1080p
+
         const maxWidth = 1920;
         const maxHeight = 1080;
         let width = screenVideo.videoWidth;
         let height = screenVideo.videoHeight;
-        
+
         if (width > maxWidth || height > maxHeight) {
-            const ratio = Math.min(maxWidth / width, maxHeight / height);
-            width = Math.floor(width * ratio);
-            height = Math.floor(height * ratio);
+          const ratio = Math.min(maxWidth / width, maxHeight / height);
+          width = Math.floor(width * ratio);
+          height = Math.floor(height * ratio);
         }
 
         if (canvas.width !== width) {
@@ -990,37 +1013,76 @@ export default function VideoEditor({ avatarRef, avatarComponent }: VideoEditorP
         }
 
         ctx.drawImage(screenVideo, 0, 0, canvas.width, canvas.height);
-        
+
         requestAnimationFrame(draw);
       };
-      
+
+      if (audioCtxRef.current?.state === 'suspended') {
+        await audioCtxRef.current.resume();
+      }
+
+      if (screenStream.getAudioTracks().length > 0 && audioCtxRef.current && destNodeRef.current) {
+        screenAudioSourceRef.current = audioCtxRef.current.createMediaStreamSource(new MediaStream([screenStream.getAudioTracks()[0]]));
+        screenAudioSourceRef.current.connect(destNodeRef.current);
+      }
+
+      if (micStream.getAudioTracks().length > 0 && audioCtxRef.current && destNodeRef.current) {
+        micAudioSourceRef.current = audioCtxRef.current.createMediaStreamSource(new MediaStream([micStream.getAudioTracks()[0]]));
+        micAudioSourceRef.current.connect(destNodeRef.current);
+      }
+
+      const combinedStream = new MediaStream([
+        ...canvas.captureStream(30).getVideoTracks(),
+        ...(destNodeRef.current ? destNodeRef.current.stream.getAudioTracks() : []),
+      ]);
+
+      const videoMimeTypes = ['video/webm;codecs=vp9,opus', 'video/webm;codecs=vp8,opus', 'video/webm', 'video/mp4'];
+      const supportedVideoMimeType = videoMimeTypes.find(type => MediaRecorder.isTypeSupported(type));
+      const recorder = new MediaRecorder(combinedStream, supportedVideoMimeType ? { mimeType: supportedVideoMimeType } : undefined);
+      const chunks: Blob[] = [];
+      recorder.ondataavailable = e => chunks.push(e.data);
+      recorder.onstop = async () => {
+        const blob = new Blob(chunks, { type: supportedVideoMimeType || 'video/webm' });
+        const url = URL.createObjectURL(blob);
+        const duration = await getMediaDuration(url, 'video');
+        const assetId = Math.random().toString(36).substring(2, 11);
+
+        setAssets(prev => [...prev, { id: assetId, type: 'video', url, name: `Recording ${prev.length + 1}` }]);
+        setClips(prev => {
+          const maxStartTime = prev.filter(c => c.type === 'video').reduce((max, c) => Math.max(max, c.startTime + c.duration), 0);
+          return [...prev, { id: assetId, url, duration, laneIndex: 1, startTime: maxStartTime, type: 'video' }];
+        });
+
+        setIsRecording(false);
+      };
+
+      const audioMimeTypes = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/ogg;codecs=opus'];
+      const supportedAudioMimeType = audioMimeTypes.find(type => MediaRecorder.isTypeSupported(type));
+      const micRecorder = new MediaRecorder(micStream, supportedAudioMimeType ? { mimeType: supportedAudioMimeType } : undefined);
+      const micChunks: Blob[] = [];
+      micRecorder.ondataavailable = e => micChunks.push(e.data);
+      micRecorder.onstop = async () => {
+        if (micChunks.length === 0) return;
+        const micBlob = new Blob(micChunks, { type: supportedAudioMimeType || 'audio/webm' });
+        const micUrl = URL.createObjectURL(micBlob);
+        const duration = await getMediaDuration(micUrl, 'audio');
+        const assetId = Math.random().toString(36).substring(2, 11);
+
+        setAssets(prev => [...prev, { id: assetId, type: 'audio', url: micUrl, name: `Mic ${new Date().toLocaleTimeString()}` }]);
+        setClips(prev => {
+          const maxStartTime = prev.filter(c => c.type === 'audio').reduce((max, c) => Math.max(max, c.startTime + c.duration), 0);
+          return [...prev, { id: assetId, url: micUrl, duration, laneIndex: 1, startTime: maxStartTime, type: 'audio' }];
+        });
+      };
+
       isRecordingRef.current = true;
       setIsRecording(true);
       draw();
 
-      const combinedStream = new MediaStream([
-        ...canvas.captureStream(30).getVideoTracks(),
-        ...(destNodeRef.current ? destNodeRef.current.stream.getAudioTracks() : [])
-      ]);
-
-      if (screenStream.getAudioTracks().length > 0 && audioCtxRef.current && destNodeRef.current) {
-        const screenSource = audioCtxRef.current.createMediaStreamSource(new MediaStream([screenStream.getAudioTracks()[0]]));
-        screenSource.connect(destNodeRef.current);
-      }
-
-      const recorder = new MediaRecorder(combinedStream, { mimeType: 'video/webm' });
-      const chunks: Blob[] = [];
-      recorder.ondataavailable = e => chunks.push(e.data);
-      recorder.onstop = () => {
-        const blob = new Blob(chunks, { type: 'video/webm' });
-        const url = URL.createObjectURL(blob);
-        setClips(prev => [...prev, url]);
-        setAssets(prev => [...prev, { id: Math.random().toString(36).substr(2, 9), type: 'video', url, name: `Recording ${prev.length + 1}` }]);
-        screenStream.getTracks().forEach(t => t.stop());
-        setIsRecording(false);
-      };
       recorder.start();
+      micRecorder.start();
       mediaRecorderRef.current = recorder;
+      micRecorderRef.current = micRecorder;
 
       screenStream.getVideoTracks()[0].onended = () => {
         stopRecording();
@@ -1119,7 +1181,7 @@ export default function VideoEditor({ avatarRef, avatarComponent }: VideoEditorP
 
   const stopRecording = async () => {
     isRecordingRef.current = false;
-    
+
     if (Capacitor.isNativePlatform()) {
       try {
         await ScreenRecorder.stop();
@@ -1135,7 +1197,20 @@ export default function VideoEditor({ avatarRef, avatarComponent }: VideoEditorP
     if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
       mediaRecorderRef.current.stop();
     }
-    // Clear canvas
+    if (micRecorderRef.current && micRecorderRef.current.state !== 'inactive') {
+      micRecorderRef.current.stop();
+    }
+
+    screenAudioSourceRef.current?.disconnect();
+    micAudioSourceRef.current?.disconnect();
+    screenAudioSourceRef.current = null;
+    micAudioSourceRef.current = null;
+
+    screenStreamRef.current?.getTracks().forEach(t => t.stop());
+    micStreamRef.current?.getTracks().forEach(t => t.stop());
+    screenStreamRef.current = null;
+    micStreamRef.current = null;
+
     const canvas = previewCanvasRef.current;
     if (canvas) {
       const ctx = canvas.getContext('2d');
