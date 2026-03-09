@@ -3,7 +3,6 @@ import { motion } from 'motion/react';
 import { Square, Circle, Monitor, Scissors, Video, Music, Type, Layers, Zap, Play, Pause, SkipBack, SkipForward, AlertCircle, Upload, Plus, MoreVertical, Volume2, Star, Trash, ChevronLeft, ChevronRight } from 'lucide-react';
 import { Capacitor } from '@capacitor/core';
 import { Camera } from '@capacitor/camera';
-import { ScreenRecorder } from '@capgo/capacitor-screen-recorder';
 import { Avatar3DCanvasRef } from './Avatar3DCanvas';
 
 interface VideoEditorProps {
@@ -996,9 +995,9 @@ export default function VideoEditor({ avatarRef, avatarComponent }: VideoEditorP
     setErrorMsg(null);
     try {
       if (Capacitor.isNativePlatform()) {
-        await ScreenRecorder.start({ recordAudio: true });
-        isRecordingRef.current = true;
-        setIsRecording(true);
+        setErrorMsg(
+          "On Android, tap Pop Out (PiP), use your phone's built-in screen recorder, then tap Import to bring the recording into the timeline."
+        );
         return;
       }
 
