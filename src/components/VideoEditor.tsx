@@ -437,8 +437,6 @@ export default function VideoEditor({ avatarRef, avatarComponent }: VideoEditorP
   const [activeTextId, setActiveTextId] = useState<string | null>(null);
   const [activeVfxId, setActiveVfxId] = useState<string | null>(null);
   const [assets, setAssets] = useState<{id: string, type: 'video' | 'audio' | 'avatar' | 'vfx', url: string, name: string}[]>([
-    { id: 'vid_intro', type: 'video', url: 'https://drive.google.com/uc?export=download&id=1wp2tJrflD4yEK0Wmyg5aE6AIWQpUHGSE', name: 'Intro' },
-    { id: 'vid_outro', type: 'video', url: 'https://drive.google.com/uc?export=download&id=15rqHEZIVxq6YckJCZNsuefqVOhbCiLWO', name: 'Outro' },
     { id: 'sfx1', type: 'audio', url: 'https://www.myinstants.com/media/sounds/bruh.mp3', name: 'Bruh' },
     { id: 'sfx2', type: 'audio', url: 'https://www.myinstants.com/media/sounds/vine-boom.mp3', name: 'Vine Boom' },
     { id: 'sfx3', type: 'audio', url: 'https://www.myinstants.com/media/sounds/fbi-open-up.mp3', name: 'FBI Open Up' },
@@ -980,11 +978,26 @@ export default function VideoEditor({ avatarRef, avatarComponent }: VideoEditorP
         return;
       }
 
-      const screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
-      const micStream = await navigator.mediaDevices.getUserMedia({
-        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
-        video: false,
-      });
+      if (!navigator.mediaDevices?.getDisplayMedia || typeof MediaRecorder === 'undefined') {
+        throw new Error('Screen recording APIs are unavailable.');
+      }
+
+      let screenStream: MediaStream;
+      try {
+        screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
+      } catch (displayErr) {
+        screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false });
+      }
+
+      let micStream: MediaStream | null = null;
+      try {
+        micStream = await navigator.mediaDevices.getUserMedia({
+          audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+          video: false,
+        });
+      } catch (micErr) {
+        console.warn('Mic capture unavailable, continuing with screen-only recording.', micErr);
+      }
 
       screenStreamRef.current = screenStream;
       micStreamRef.current = micStream;
@@ -996,8 +1009,13 @@ export default function VideoEditor({ avatarRef, avatarComponent }: VideoEditorP
       screenVideo.playsInline = true;
 
       const canvas = previewCanvasRef.current;
-      if (!canvas) return;
-      const ctx = canvas.getContext('2d')!;
+      if (!canvas) {
+        throw new Error('Recording canvas is unavailable.');
+      }
+      const ctx = canvas.getContext('2d');
+      if (!ctx) {
+        throw new Error('Canvas rendering context is unavailable.');
+      }
 
       const draw = () => {
         if (!isRecordingRef.current) return;
@@ -1018,7 +1036,7 @@ export default function VideoEditor({ avatarRef, avatarComponent }: VideoEditorP
           height = Math.floor(height * ratio);
         }
 
-        if (canvas.width !== width) {
+        if (canvas.width !== width || canvas.height !== height) {
           canvas.width = width;
           canvas.height = height;
         }
@@ -1037,7 +1055,7 @@ export default function VideoEditor({ avatarRef, avatarComponent }: VideoEditorP
         screenAudioSourceRef.current.connect(destNodeRef.current);
       }
 
-      if (micStream.getAudioTracks().length > 0 && audioCtxRef.current && destNodeRef.current) {
+      if (micStream && micStream.getAudioTracks().length > 0 && audioCtxRef.current && destNodeRef.current) {
         micAudioSourceRef.current = audioCtxRef.current.createMediaStreamSource(new MediaStream([micStream.getAudioTracks()[0]]));
         micAudioSourceRef.current.connect(destNodeRef.current);
       }
@@ -1078,41 +1096,44 @@ export default function VideoEditor({ avatarRef, avatarComponent }: VideoEditorP
         setIsRecording(false);
       };
 
-      const audioMimeTypes = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/ogg;codecs=opus'];
-      const supportedAudioMimeType = audioMimeTypes.find(type => MediaRecorder.isTypeSupported(type));
-      const micRecorder = new MediaRecorder(micStream, supportedAudioMimeType ? { mimeType: supportedAudioMimeType } : undefined);
-      const micChunks: Blob[] = [];
-      micRecorder.ondataavailable = e => micChunks.push(e.data);
-      micRecorder.onstop = async () => {
-        if (micChunks.length === 0) return;
-        const micBlob = new Blob(micChunks, { type: supportedAudioMimeType || 'audio/webm' });
-        const micUrl = URL.createObjectURL(micBlob);
-        const duration = await getMediaDuration(micUrl, 'audio');
-        const assetId = Math.random().toString(36).substring(2, 11);
+      let micRecorder: MediaRecorder | null = null;
+      if (micStream) {
+        const audioMimeTypes = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/ogg;codecs=opus'];
+        const supportedAudioMimeType = audioMimeTypes.find(type => MediaRecorder.isTypeSupported(type));
+        micRecorder = new MediaRecorder(micStream, supportedAudioMimeType ? { mimeType: supportedAudioMimeType } : undefined);
+        const micChunks: Blob[] = [];
+        micRecorder.ondataavailable = e => micChunks.push(e.data);
+        micRecorder.onstop = async () => {
+          if (micChunks.length === 0) return;
+          const micBlob = new Blob(micChunks, { type: supportedAudioMimeType || 'audio/webm' });
+          const micUrl = URL.createObjectURL(micBlob);
+          const duration = await getMediaDuration(micUrl, 'audio');
+          const assetId = Math.random().toString(36).substring(2, 11);
 
-        setAssets(prev => [...prev, { id: assetId, type: 'audio', url: micUrl, name: `Mic ${new Date().toLocaleTimeString()}` }]);
-        setClips(prev => {
-          const latestVideo = [...prev]
-            .filter(c => c.type === 'video')
-            .sort((a, b) => (b.startTime + b.duration) - (a.startTime + a.duration))[0];
-          const startTime = latestVideo
-            ? latestVideo.startTime
-            : prev.filter(c => c.type === 'audio').reduce((max, c) => Math.max(max, c.startTime + c.duration), 0);
-          setAvatarOverlays(existing => {
-            if (existing.length === 0) return existing;
-            const last = existing[existing.length - 1];
-            return [...existing.slice(0, -1), { ...last, micClipId: assetId, duration: Math.max(last.duration, duration) }];
+          setAssets(prev => [...prev, { id: assetId, type: 'audio', url: micUrl, name: `Mic ${new Date().toLocaleTimeString()}` }]);
+          setClips(prev => {
+            const latestVideo = [...prev]
+              .filter(c => c.type === 'video')
+              .sort((a, b) => (b.startTime + b.duration) - (a.startTime + a.duration))[0];
+            const startTime = latestVideo
+              ? latestVideo.startTime
+              : prev.filter(c => c.type === 'audio').reduce((max, c) => Math.max(max, c.startTime + c.duration), 0);
+            setAvatarOverlays(existing => {
+              if (existing.length === 0) return existing;
+              const last = existing[existing.length - 1];
+              return [...existing.slice(0, -1), { ...last, micClipId: assetId, duration: Math.max(last.duration, duration) }];
+            });
+            return [...prev, { id: assetId, url: micUrl, duration, laneIndex: 1, startTime, type: 'audio' }];
           });
-          return [...prev, { id: assetId, url: micUrl, duration, laneIndex: 1, startTime, type: 'audio' }];
-        });
-      };
+        };
+      }
 
       isRecordingRef.current = true;
       setIsRecording(true);
       draw();
 
       recorder.start();
-      micRecorder.start();
+      micRecorder?.start();
       mediaRecorderRef.current = recorder;
       micRecorderRef.current = micRecorder;
 
@@ -1122,12 +1143,15 @@ export default function VideoEditor({ avatarRef, avatarComponent }: VideoEditorP
 
     } catch (err: any) {
       console.error("Recording failed", err);
+      stopRecording();
       setIsRecording(false);
       isRecordingRef.current = false;
-      if (err.name === 'NotAllowedError' || err.message.includes('Permission denied')) {
+      const errorName = err?.name || '';
+      const errorMessage = typeof err?.message === 'string' ? err.message : '';
+      if (errorName === 'NotAllowedError' || errorMessage.includes('Permission denied')) {
         setErrorMsg("Screen recording permission denied. Please allow it in your browser.");
       } else {
-        setErrorMsg("Screen recording is not supported in this browser. For mobile gameplay, use the PiP button to float your avatar, then use your phone's built-in screen recorder! You can then import the video here.");
+        setErrorMsg("Unable to start screen recording. Make sure your browser supports screen capture and try again.");
       }
     }
   };
