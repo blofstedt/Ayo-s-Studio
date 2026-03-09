@@ -301,7 +301,7 @@ const TextOverlay: React.FC<{ text: any, onUpdate: (updater: (prev: any) => any)
   );
 };
 
-const VfxOverlay: React.FC<{ vfx: any, onUpdate: (updater: (prev: any) => any) => void, isSelected: boolean, onSelect: () => void }> = ({ vfx, onUpdate, isSelected, onSelect }) => {
+const VfxOverlay: React.FC<{ vfx: any, onUpdate: (updater: (prev: any) => any) => void, isSelected: boolean, onSelect: () => void, avatarComponent?: React.ReactNode }> = ({ vfx, onUpdate, isSelected, onSelect, avatarComponent }) => {
   const containerRef = useRef<HTMLDivElement>(null);
 
   return (
@@ -352,8 +352,12 @@ const VfxOverlay: React.FC<{ vfx: any, onUpdate: (updater: (prev: any) => any) =
         target.addEventListener('pointercancel', handleUp);
       }}
     >
-      <img src={vfx.url} alt="VFX" className="w-24 h-24 object-contain" referrerPolicy="no-referrer" />
-      
+      {vfx.kind === 'avatar' ? (
+        <div className="w-[140px] h-[140px] rounded-xl overflow-hidden border border-white/10 bg-black/30">{avatarComponent}</div>
+      ) : (
+        <img src={vfx.url} alt="VFX" className="w-24 h-24 object-contain" referrerPolicy="no-referrer" />
+      )}
+
       {isSelected && (
         <>
           <div 
@@ -432,7 +436,7 @@ export default function VideoEditor({ avatarRef, avatarComponent }: VideoEditorP
   const [selectedClipId, setSelectedClipId] = useState<string | null>(null);
   const [clips, setClips] = useState<{id: string, url: string, duration: number, laneIndex: number, startTime: number, type: 'video' | 'audio', mediaOffset?: number}[]>([]);
   const [texts, setTexts] = useState<{id: string, text: string, x: number, y: number, startTime: number, duration: number, rotation: number, scale: number, laneIndex: number}[]>([]);
-  const [vfxElements, setVfxElements] = useState<{id: string, url: string, x: number, y: number, startTime: number, duration: number, rotation: number, scale: number, laneIndex: number}[]>([]);
+  const [vfxElements, setVfxElements] = useState<{id: string, url: string, x: number, y: number, startTime: number, duration: number, rotation: number, scale: number, laneIndex: number, kind?: 'vfx' | 'avatar', micClipId?: string}[]>([]);
   const [activeTextId, setActiveTextId] = useState<string | null>(null);
   const [activeVfxId, setActiveVfxId] = useState<string | null>(null);
   const [assets, setAssets] = useState<{id: string, type: 'video' | 'audio' | 'avatar' | 'vfx', url: string, name: string}[]>([
@@ -814,9 +818,15 @@ export default function VideoEditor({ avatarRef, avatarComponent }: VideoEditorP
   const playbackVideoRefs = useRef<Record<string, HTMLVideoElement | null>>({});
   const playbackAudioRef = useRef<HTMLAudioElement>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const micRecorderRef = useRef<MediaRecorder | null>(null);
   const isRecordingRef = useRef(false);
   const audioCtxRef = useRef<AudioContext | null>(null);
   const destNodeRef = useRef<MediaStreamAudioDestinationNode | null>(null);
+  const screenStreamRef = useRef<MediaStream | null>(null);
+  const micStreamRef = useRef<MediaStream | null>(null);
+  const screenAudioSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
+  const micAudioSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
+  const recordingStartTimeRef = useRef(0);
 
   useEffect(() => {
     const handleImport = () => {
@@ -946,9 +956,24 @@ export default function VideoEditor({ avatarRef, avatarComponent }: VideoEditorP
     playEmotionSound(emotion);
   };
 
+  const getMediaDuration = (url: string, type: 'video' | 'audio') => {
+    return new Promise<number>((resolve) => {
+      const media = document.createElement(type);
+      media.preload = 'metadata';
+      media.src = url;
+      media.onloadedmetadata = () => {
+        const duration = Number.isFinite(media.duration) ? media.duration : 5;
+        resolve(duration > 0 ? duration : 5);
+      };
+      media.onerror = () => resolve(5);
+    });
+  };
+
   const startRecording = async () => {
     setErrorMsg(null);
     try {
+      recordingStartTimeRef.current = currentTime;
+
       if (Capacitor.isNativePlatform()) {
         await ScreenRecorder.start({ recordAudio: true });
         isRecordingRef.current = true;
@@ -956,8 +981,14 @@ export default function VideoEditor({ avatarRef, avatarComponent }: VideoEditorP
         return;
       }
 
-      // Try to get screen recording
       const screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
+      const micStream = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+        video: false,
+      });
+
+      screenStreamRef.current = screenStream;
+      micStreamRef.current = micStream;
 
       const screenVideo = document.createElement('video');
       screenVideo.srcObject = screenStream;
@@ -971,17 +1002,16 @@ export default function VideoEditor({ avatarRef, avatarComponent }: VideoEditorP
 
       const draw = () => {
         if (!isRecordingRef.current) return;
-        
-        // Match canvas size to screen video aspect ratio, but limit to 1080p
+
         const maxWidth = 1920;
         const maxHeight = 1080;
         let width = screenVideo.videoWidth;
         let height = screenVideo.videoHeight;
-        
+
         if (width > maxWidth || height > maxHeight) {
-            const ratio = Math.min(maxWidth / width, maxHeight / height);
-            width = Math.floor(width * ratio);
-            height = Math.floor(height * ratio);
+          const ratio = Math.min(maxWidth / width, maxHeight / height);
+          width = Math.floor(width * ratio);
+          height = Math.floor(height * ratio);
         }
 
         if (canvas.width !== width) {
@@ -990,37 +1020,88 @@ export default function VideoEditor({ avatarRef, avatarComponent }: VideoEditorP
         }
 
         ctx.drawImage(screenVideo, 0, 0, canvas.width, canvas.height);
-        
+
         requestAnimationFrame(draw);
       };
-      
+
+      if (audioCtxRef.current?.state === 'suspended') {
+        await audioCtxRef.current.resume();
+      }
+
+      if (screenStream.getAudioTracks().length > 0 && audioCtxRef.current && destNodeRef.current) {
+        screenAudioSourceRef.current = audioCtxRef.current.createMediaStreamSource(new MediaStream([screenStream.getAudioTracks()[0]]));
+        screenAudioSourceRef.current.connect(destNodeRef.current);
+      }
+
+      if (micStream.getAudioTracks().length > 0 && audioCtxRef.current && destNodeRef.current) {
+        micAudioSourceRef.current = audioCtxRef.current.createMediaStreamSource(new MediaStream([micStream.getAudioTracks()[0]]));
+        micAudioSourceRef.current.connect(destNodeRef.current);
+      }
+
+      const combinedStream = new MediaStream([
+        ...canvas.captureStream(30).getVideoTracks(),
+        ...(destNodeRef.current ? destNodeRef.current.stream.getAudioTracks() : []),
+      ]);
+
+      const videoMimeTypes = ['video/webm;codecs=vp9,opus', 'video/webm;codecs=vp8,opus', 'video/webm', 'video/mp4'];
+      const supportedVideoMimeType = videoMimeTypes.find(type => MediaRecorder.isTypeSupported(type));
+      const recorder = new MediaRecorder(combinedStream, supportedVideoMimeType ? { mimeType: supportedVideoMimeType } : undefined);
+      const chunks: Blob[] = [];
+      recorder.ondataavailable = e => chunks.push(e.data);
+      recorder.onstop = async () => {
+        const blob = new Blob(chunks, { type: supportedVideoMimeType || 'video/webm' });
+        const url = URL.createObjectURL(blob);
+        const duration = await getMediaDuration(url, 'video');
+        const assetId = Math.random().toString(36).substring(2, 11);
+
+        setAssets(prev => [...prev, { id: assetId, type: 'video', url, name: `Recording ${prev.length + 1}` }]);
+        setClips(prev => {
+          return [...prev, { id: assetId, url, duration, laneIndex: 1, startTime: recordingStartTimeRef.current, type: 'video' }];
+        });
+
+        setIsRecording(false);
+      };
+
+      const audioMimeTypes = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/ogg;codecs=opus'];
+      const supportedAudioMimeType = audioMimeTypes.find(type => MediaRecorder.isTypeSupported(type));
+      const micRecorder = new MediaRecorder(micStream, supportedAudioMimeType ? { mimeType: supportedAudioMimeType } : undefined);
+      const micChunks: Blob[] = [];
+      micRecorder.ondataavailable = e => micChunks.push(e.data);
+      micRecorder.onstop = async () => {
+        if (micChunks.length === 0) return;
+        const micBlob = new Blob(micChunks, { type: supportedAudioMimeType || 'audio/webm' });
+        const micUrl = URL.createObjectURL(micBlob);
+        const duration = await getMediaDuration(micUrl, 'audio');
+        const assetId = Math.random().toString(36).substring(2, 11);
+
+        setAssets(prev => [...prev, { id: assetId, type: 'audio', url: micUrl, name: `Mic ${new Date().toLocaleTimeString()}` }]);
+        setClips(prev => {
+          return [...prev, { id: assetId, url: micUrl, duration, laneIndex: 1, startTime: recordingStartTimeRef.current, type: 'audio' }];
+        });
+
+        setVfxElements(prev => [...prev, {
+          id: Math.random().toString(36).substring(2, 11),
+          url: 'avatar',
+          x: 82,
+          y: 78,
+          startTime: recordingStartTimeRef.current,
+          duration,
+          rotation: 0,
+          scale: 1,
+          laneIndex: 1,
+          kind: 'avatar',
+          micClipId: assetId,
+        }]);
+      };
+
       isRecordingRef.current = true;
       setIsRecording(true);
       draw();
 
-      const combinedStream = new MediaStream([
-        ...canvas.captureStream(30).getVideoTracks(),
-        ...(destNodeRef.current ? destNodeRef.current.stream.getAudioTracks() : [])
-      ]);
-
-      if (screenStream.getAudioTracks().length > 0 && audioCtxRef.current && destNodeRef.current) {
-        const screenSource = audioCtxRef.current.createMediaStreamSource(new MediaStream([screenStream.getAudioTracks()[0]]));
-        screenSource.connect(destNodeRef.current);
-      }
-
-      const recorder = new MediaRecorder(combinedStream, { mimeType: 'video/webm' });
-      const chunks: Blob[] = [];
-      recorder.ondataavailable = e => chunks.push(e.data);
-      recorder.onstop = () => {
-        const blob = new Blob(chunks, { type: 'video/webm' });
-        const url = URL.createObjectURL(blob);
-        setClips(prev => [...prev, url]);
-        setAssets(prev => [...prev, { id: Math.random().toString(36).substr(2, 9), type: 'video', url, name: `Recording ${prev.length + 1}` }]);
-        screenStream.getTracks().forEach(t => t.stop());
-        setIsRecording(false);
-      };
       recorder.start();
+      micRecorder.start();
       mediaRecorderRef.current = recorder;
+      micRecorderRef.current = micRecorder;
 
       screenStream.getVideoTracks()[0].onended = () => {
         stopRecording();
@@ -1030,6 +1111,15 @@ export default function VideoEditor({ avatarRef, avatarComponent }: VideoEditorP
       console.error("Recording failed", err);
       setIsRecording(false);
       isRecordingRef.current = false;
+      screenAudioSourceRef.current?.disconnect();
+      micAudioSourceRef.current?.disconnect();
+      screenAudioSourceRef.current = null;
+      micAudioSourceRef.current = null;
+      screenStreamRef.current?.getTracks().forEach(t => t.stop());
+      micStreamRef.current?.getTracks().forEach(t => t.stop());
+      screenStreamRef.current = null;
+      micStreamRef.current = null;
+
       if (err.name === 'NotAllowedError' || err.message.includes('Permission denied')) {
         setErrorMsg("Screen recording permission denied. Please allow it in your browser.");
       } else {
@@ -1119,7 +1209,7 @@ export default function VideoEditor({ avatarRef, avatarComponent }: VideoEditorP
 
   const stopRecording = async () => {
     isRecordingRef.current = false;
-    
+
     if (Capacitor.isNativePlatform()) {
       try {
         await ScreenRecorder.stop();
@@ -1135,7 +1225,20 @@ export default function VideoEditor({ avatarRef, avatarComponent }: VideoEditorP
     if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
       mediaRecorderRef.current.stop();
     }
-    // Clear canvas
+    if (micRecorderRef.current && micRecorderRef.current.state !== 'inactive') {
+      micRecorderRef.current.stop();
+    }
+
+    screenAudioSourceRef.current?.disconnect();
+    micAudioSourceRef.current?.disconnect();
+    screenAudioSourceRef.current = null;
+    micAudioSourceRef.current = null;
+
+    screenStreamRef.current?.getTracks().forEach(t => t.stop());
+    micStreamRef.current?.getTracks().forEach(t => t.stop());
+    screenStreamRef.current = null;
+    micStreamRef.current = null;
+
     const canvas = previewCanvasRef.current;
     if (canvas) {
       const ctx = canvas.getContext('2d');
@@ -1350,7 +1453,7 @@ export default function VideoEditor({ avatarRef, avatarComponent }: VideoEditorP
                 <ChevronRight className="w-2.5 h-2.5 text-white opacity-50 group-hover/resize:opacity-100 pointer-events-none" />
               </div>
               <Star className="w-3 h-3 text-yellow-400 mr-1.5 pointer-events-none" />
-              <span className="text-[10px] font-medium text-yellow-300 truncate pointer-events-none">VFX</span>
+              <span className="text-[10px] font-medium text-yellow-300 truncate pointer-events-none">{vfx.kind === 'avatar' ? 'Avatar' : 'VFX'}</span>
             </div>
         ))}
       </>
@@ -1447,7 +1550,8 @@ export default function VideoEditor({ avatarRef, avatarComponent }: VideoEditorP
             }}
             onUpdate={(updater) => {
               setVfxElements(prev => prev.map(v => v.id === vfx.id ? updater(v) : v));
-            }} 
+            }}
+            avatarComponent={avatarComponent}
           />
         ))}
 
@@ -1473,16 +1577,6 @@ export default function VideoEditor({ avatarRef, avatarComponent }: VideoEditorP
           className={`max-w-full max-h-full object-contain ${!isRecording ? 'hidden' : ''}`}
         />
 
-        {/* Avatar Overlay */}
-        {avatarComponent && (
-          <div 
-            className="absolute bottom-4 left-4 w-[30%] max-w-[200px] aspect-square z-30 rounded-xl overflow-hidden shadow-2xl border border-white/10"
-            onPointerDown={(e) => e.stopPropagation()}
-          >
-            {avatarComponent}
-          </div>
-        )}
-        
         {!isRecording && clips.length === 0 && !errorMsg && (
           <div className="absolute inset-0 flex flex-col items-center justify-center text-zinc-500 p-6 text-center">
             <Monitor className="w-12 h-12 mb-4 opacity-50" />
