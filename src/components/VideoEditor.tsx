@@ -433,6 +433,7 @@ export default function VideoEditor({ avatarRef, avatarComponent }: VideoEditorP
   const [clips, setClips] = useState<{id: string, url: string, duration: number, laneIndex: number, startTime: number, type: 'video' | 'audio', mediaOffset?: number}[]>([]);
   const [texts, setTexts] = useState<{id: string, text: string, x: number, y: number, startTime: number, duration: number, rotation: number, scale: number, laneIndex: number}[]>([]);
   const [vfxElements, setVfxElements] = useState<{id: string, url: string, x: number, y: number, startTime: number, duration: number, rotation: number, scale: number, laneIndex: number}[]>([]);
+  const [avatarOverlays, setAvatarOverlays] = useState<{id: string, x: number, y: number, startTime: number, duration: number, rotation: number, scale: number, laneIndex: number, micClipId?: string}[]>([]);
   const [activeTextId, setActiveTextId] = useState<string | null>(null);
   const [activeVfxId, setActiveVfxId] = useState<string | null>(null);
   const [assets, setAssets] = useState<{id: string, type: 'video' | 'audio' | 'avatar' | 'vfx', url: string, name: string}[]>([
@@ -508,11 +509,12 @@ export default function VideoEditor({ avatarRef, avatarComponent }: VideoEditorP
     const maxEnd = Math.max(
       clips.reduce((acc, clip) => Math.max(acc, clip.startTime + clip.duration), 0),
       texts.reduce((acc, text) => Math.max(acc, text.startTime + text.duration), 0),
-      vfxElements.reduce((acc, vfx) => Math.max(acc, vfx.startTime + vfx.duration), 0)
+      vfxElements.reduce((acc, vfx) => Math.max(acc, vfx.startTime + vfx.duration), 0),
+      avatarOverlays.reduce((acc, avatar) => Math.max(acc, avatar.startTime + avatar.duration), 0)
     );
     const baseDuration = Math.max(10, maxEnd);
     return zoom < 1 ? baseDuration / zoom : baseDuration;
-  }, [clips, texts, vfxElements, draggedClip, zoom]);
+  }, [clips, texts, vfxElements, avatarOverlays, draggedClip, zoom]);
 
   const activeVideoClips = React.useMemo(() => {
     return clips
@@ -571,6 +573,7 @@ export default function VideoEditor({ avatarRef, avatarComponent }: VideoEditorP
               setClips(prev => prev.map(c => c.id === draggedClip.id ? { ...c, startTime: newStartTime, laneIndex: newLaneIndex } : c));
               setTexts(prev => prev.map(t => t.id === draggedClip.id ? { ...t, startTime: newStartTime, laneIndex: newLaneIndex } : t));
               setVfxElements(prev => prev.map(v => v.id === draggedClip.id ? { ...v, startTime: newStartTime, laneIndex: newLaneIndex } : v));
+              setAvatarOverlays(prev => prev.map(v => v.id === draggedClip.id ? { ...v, startTime: newStartTime, laneIndex: newLaneIndex } : v));
             } else if (draggedClip.type === 'resize-start') {
               const newStartTime = Math.min(clickTime, draggedClip.initialStartTime + draggedClip.initialDuration - 0.5);
               const newDuration = Math.max(0.5, draggedClip.initialStartTime + draggedClip.initialDuration - newStartTime);
@@ -583,11 +586,13 @@ export default function VideoEditor({ avatarRef, avatarComponent }: VideoEditorP
               }));
               setTexts(prev => prev.map(t => t.id === draggedClip.id ? { ...t, startTime: newStartTime, duration: newDuration } : t));
               setVfxElements(prev => prev.map(v => v.id === draggedClip.id ? { ...v, startTime: newStartTime, duration: newDuration } : v));
+              setAvatarOverlays(prev => prev.map(v => v.id === draggedClip.id ? { ...v, startTime: newStartTime, duration: newDuration } : v));
             } else if (draggedClip.type === 'resize-end') {
               const newDuration = Math.max(0.5, clickTime - draggedClip.initialStartTime);
               setClips(prev => prev.map(c => c.id === draggedClip.id ? { ...c, duration: newDuration } : c));
               setTexts(prev => prev.map(t => t.id === draggedClip.id ? { ...t, duration: newDuration } : t));
               setVfxElements(prev => prev.map(v => v.id === draggedClip.id ? { ...v, duration: newDuration } : v));
+              setAvatarOverlays(prev => prev.map(v => v.id === draggedClip.id ? { ...v, duration: newDuration } : v));
             }
           }
         }
@@ -611,6 +616,7 @@ export default function VideoEditor({ avatarRef, avatarComponent }: VideoEditorP
       setClips(prev => prev.filter(c => c.id !== clipId));
       setTexts(prev => prev.filter(t => t.id !== clipId));
       setVfxElements(prev => prev.filter(v => v.id !== clipId));
+      setAvatarOverlays(prev => prev.filter(v => v.id !== clipId));
     }
     
     setDraggedClip(null);
@@ -996,6 +1002,11 @@ export default function VideoEditor({ avatarRef, avatarComponent }: VideoEditorP
       const draw = () => {
         if (!isRecordingRef.current) return;
 
+        if (screenVideo.readyState < 2 || !screenVideo.videoWidth || !screenVideo.videoHeight) {
+          requestAnimationFrame(draw);
+          return;
+        }
+
         const maxWidth = 1920;
         const maxHeight = 1080;
         let width = screenVideo.videoWidth;
@@ -1050,6 +1061,17 @@ export default function VideoEditor({ avatarRef, avatarComponent }: VideoEditorP
         setAssets(prev => [...prev, { id: assetId, type: 'video', url, name: `Recording ${prev.length + 1}` }]);
         setClips(prev => {
           const maxStartTime = prev.filter(c => c.type === 'video').reduce((max, c) => Math.max(max, c.startTime + c.duration), 0);
+          const avatarId = Math.random().toString(36).substring(2, 11);
+          setAvatarOverlays(existing => [...existing, {
+            id: avatarId,
+            x: 15,
+            y: 82,
+            startTime: maxStartTime,
+            duration,
+            laneIndex: 1,
+            rotation: 0,
+            scale: 1
+          }]);
           return [...prev, { id: assetId, url, duration, laneIndex: 1, startTime: maxStartTime, type: 'video' }];
         });
 
@@ -1070,8 +1092,18 @@ export default function VideoEditor({ avatarRef, avatarComponent }: VideoEditorP
 
         setAssets(prev => [...prev, { id: assetId, type: 'audio', url: micUrl, name: `Mic ${new Date().toLocaleTimeString()}` }]);
         setClips(prev => {
-          const maxStartTime = prev.filter(c => c.type === 'audio').reduce((max, c) => Math.max(max, c.startTime + c.duration), 0);
-          return [...prev, { id: assetId, url: micUrl, duration, laneIndex: 1, startTime: maxStartTime, type: 'audio' }];
+          const latestVideo = [...prev]
+            .filter(c => c.type === 'video')
+            .sort((a, b) => (b.startTime + b.duration) - (a.startTime + a.duration))[0];
+          const startTime = latestVideo
+            ? latestVideo.startTime
+            : prev.filter(c => c.type === 'audio').reduce((max, c) => Math.max(max, c.startTime + c.duration), 0);
+          setAvatarOverlays(existing => {
+            if (existing.length === 0) return existing;
+            const last = existing[existing.length - 1];
+            return [...existing.slice(0, -1), { ...last, micClipId: assetId, duration: Math.max(last.duration, duration) }];
+          });
+          return [...prev, { id: assetId, url: micUrl, duration, laneIndex: 1, startTime, type: 'audio' }];
         });
       };
 
@@ -1333,7 +1365,7 @@ export default function VideoEditor({ avatarRef, avatarComponent }: VideoEditorP
 
   const videoHasExtra = clips.some(c => c.type === 'video' && (c.laneIndex ?? 1) !== 1);
   const audioHasExtra = clips.some(c => c.type === 'audio' && (c.laneIndex ?? 1) !== 1);
-  const fxHasExtra = texts.some(t => (t.laneIndex ?? 1) !== 1) || vfxElements.some(v => (v.laneIndex ?? 1) !== 1);
+  const fxHasExtra = texts.some(t => (t.laneIndex ?? 1) !== 1) || vfxElements.some(v => (v.laneIndex ?? 1) !== 1) || avatarOverlays.some(v => (v.laneIndex ?? 1) !== 1);
 
   const videoClipsRender = React.useMemo(() => {
     return clips.filter(c => c.type === 'video').map(clip => (
@@ -1428,9 +1460,28 @@ export default function VideoEditor({ avatarRef, avatarComponent }: VideoEditorP
               <span className="text-[10px] font-medium text-yellow-300 truncate pointer-events-none">VFX</span>
             </div>
         ))}
+        {avatarOverlays.map((avatar) => (
+            <div
+              key={avatar.id}
+              onPointerDown={(e) => startDragging(e, avatar, 'move')}
+              className={`absolute w-24 bg-indigo-500/20 border border-indigo-500/50 rounded-md flex items-center px-2 cursor-pointer hover:border-indigo-400 transition-colors group/clip select-none ${draggedClip?.id === avatar.id ? 'opacity-70 scale-105 shadow-2xl z-50 ring-2 ring-white' : ''}`}
+              style={{ left: `${totalDuration > 0 ? (avatar.startTime / totalDuration) * 100 : 0}%`, width: `${totalDuration > 0 ? (avatar.duration / totalDuration) * 100 : 0}%`, top: fxHasExtra ? `${(avatar.laneIndex ?? 1) * 33.33}%` : '0%', height: fxHasExtra ? '33.33%' : '100%', touchAction: 'none' }}
+            >
+              <div className="absolute left-0 top-0 bottom-0 w-3 cursor-w-resize bg-white/20 hover:bg-white/40 z-10 flex items-center justify-center group/resize" style={{ touchAction: 'none' }} onPointerDown={(e) => { e.stopPropagation(); startDragging(e, avatar, 'resize-start'); }}>
+                <ChevronLeft className="w-2.5 h-2.5 text-white opacity-50 group-hover/resize:opacity-100 pointer-events-none" />
+              </div>
+              <div className="absolute right-0 top-0 bottom-0 w-3 cursor-e-resize bg-white/20 hover:bg-white/40 z-10 flex items-center justify-center group/resize" style={{ touchAction: 'none' }} onPointerDown={(e) => { e.stopPropagation(); startDragging(e, avatar, 'resize-end'); }}>
+                <ChevronRight className="w-2.5 h-2.5 text-white opacity-50 group-hover/resize:opacity-100 pointer-events-none" />
+              </div>
+              <Star className="w-3 h-3 text-indigo-300 mr-1.5 pointer-events-none" />
+              <span className="text-[10px] font-medium text-indigo-200 truncate pointer-events-none">Avatar</span>
+            </div>
+        ))}
       </>
     );
-  }, [texts, vfxElements, draggedClip, totalDuration, fxHasExtra, startDragging]);
+  }, [texts, vfxElements, avatarOverlays, draggedClip, totalDuration, fxHasExtra, startDragging]);
+
+  const activeAvatarOverlay = avatarOverlays.find(v => currentTime >= v.startTime && currentTime <= v.startTime + v.duration);
 
   return (
     <div className="flex flex-col h-full bg-zinc-950 text-white rounded-3xl overflow-hidden border border-white/10 shadow-2xl relative" onContextMenu={(e) => e.preventDefault()}>
@@ -1549,9 +1600,14 @@ export default function VideoEditor({ avatarRef, avatarComponent }: VideoEditorP
         />
 
         {/* Avatar Overlay */}
-        {avatarComponent && (
+        {!isRecording && avatarComponent && activeAvatarOverlay && (
           <div 
-            className="absolute bottom-4 left-4 w-[30%] max-w-[200px] aspect-square z-30 rounded-xl overflow-hidden shadow-2xl border border-white/10"
+            className="absolute w-[30%] max-w-[200px] aspect-square z-30 rounded-xl overflow-hidden shadow-2xl border border-white/10"
+            style={{
+              left: `${activeAvatarOverlay.x}%`,
+              top: `${activeAvatarOverlay.y}%`,
+              transform: `translate(-50%, -50%) rotate(${activeAvatarOverlay.rotation || 0}deg) scale(${activeAvatarOverlay.scale || 1})`
+            }}
             onPointerDown={(e) => e.stopPropagation()}
           >
             {avatarComponent}
@@ -1561,7 +1617,7 @@ export default function VideoEditor({ avatarRef, avatarComponent }: VideoEditorP
         {!isRecording && clips.length === 0 && !errorMsg && (
           <div className="absolute inset-0 flex flex-col items-center justify-center text-zinc-500 p-6 text-center">
             <Monitor className="w-12 h-12 mb-4 opacity-50" />
-            <p className="text-sm font-medium mb-2">Click Record to capture your screen & avatar</p>
+            <p className="text-sm font-medium mb-2">Click Record to capture your screen + mic</p>
             <p className="text-xs opacity-70 max-w-sm">
               For mobile gameplay: Pop out your avatar (PiP), use your phone's built-in screen recorder, then import the video here!
             </p>
